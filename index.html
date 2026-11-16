@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<meta name="description" content="Falcon Quant Terminal - PAPER trading only. Daily SMA50 rule on Binance USD-M perps.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Quant Terminal">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+<title>Quant Terminal (paper)</title>
+</head>
+<body>
+<header class="top">
+  <div class="brand">Quant Terminal <span class="paper">PAPER ONLY</span></div>
+  <div class="status"><span id="srcDot" class="dot"></span><span id="srcLabel">starting…</span></div>
+  <div class="status small"><span id="wsLabel">price stream: -</span> · <span id="scanLabel">no scan yet</span></div>
+  <div id="banner" class="banner hidden"></div>
+</header>
+
+<main>
+  <section id="tab-scanner" class="tab active">
+    <div class="row between">
+      <div id="scanSummary" class="muted">Scanning top 20 USDT perps…</div>
+      <button id="btnScan" class="btn">Rescan</button>
+    </div>
+    <div id="scanList"></div>
+  </section>
+
+  <section id="tab-positions" class="tab">
+    <h2>Open paper positions</h2>
+    <div id="posList"></div>
+    <h2>Closed trades</h2>
+    <div id="tradeList"></div>
+  </section>
+
+  <section id="tab-account" class="tab">
+    <div id="acctCards" class="cards"></div>
+    <canvas id="eqChart" class="chart" height="140"></canvas>
+    <h2>Risk usage</h2>
+    <div id="riskBox"></div>
+    <h2>Activity log (IST)</h2>
+    <div id="eventLog" class="log"></div>
+  </section>
+
+  <section id="tab-settings" class="tab">
+    <h2>Sizing preset</h2>
+    <select id="presetSel" class="big">
+      <option value="conservative">conservative (1% × 3, 3% total)</option>
+      <option value="balanced">balanced (1% × 5, 5% total)</option>
+      <option value="aggressive">aggressive (default) (1.5% × 5, 7.5% total)</option>
+      <option value="custom" disabled>custom</option>
+    </select>
+    <p id="presetNote" class="muted"></p>
+
+    <h2>Switches</h2>
+    <label class="sw"><input type="checkbox" id="optShort"><span>Allow SHORT signals (off = long/flat, the tested rule)</span></label>
+    <label class="sw"><input type="checkbox" id="optAuto"><span>Auto paper-trade (simulated only; off by default)</span></label>
+    <label class="sw"><input type="checkbox" id="optNotify"><span>Local notification when a signal flips (only while the app is open)</span></label>
+    <label class="sw"><input type="checkbox" id="optWake"><span>Keep screen awake (Screen Wake Lock)</span></label>
+    <p id="wakeNote" class="muted"></p>
+
+    <h2>Paper account</h2>
+    <div class="row"><input id="startBal" type="number" inputmode="decimal" min="10" step="10" value="300" class="big num"> <span class="muted">USDT start balance</span></div>
+    <div class="row"><button id="btnReset" class="btn danger">Reset paper account</button><button id="btnExport" class="btn">Export JSON</button></div>
+
+    <h2>Data source</h2>
+    <p id="srcInfo" class="muted"></p>
+    <button id="btnReprobe" class="btn">Re-check sources &amp; reconnect</button>
+
+    <h2>Running in the background (honest limits)</h2>
+    <div class="note">
+      <p>This is a web app. When the screen is off or you switch apps, Android and iOS <b>pause it</b>: no scans, no stop checks, no notifications. That is an operating-system rule; a web page cannot get around it.</p>
+      <p>What the app does instead: the moment you open it again, it downloads the 1-minute (or 15-minute/1-hour for long gaps) <b>mark-price candles</b> for the time it was asleep and closes any position whose stop was crossed, at the stop price (or worse, if price jumped past it). Those exits are labelled <b>RECONSTRUCTED</b>. Funding is charged up to that exit time. Daily-signal flips are only acted on at the current price when you reopen the app.</p>
+      <p>"Keep screen awake" stops the phone from sleeping while the app is on screen; it drains battery. For true 24/7 paper trading, run the Python backend on an always-on device (see README: Termux or a small server).</p>
+    </div>
+
+    <h2>Voice: open Falcon</h2>
+    <div class="note">
+      <p>Phrase: <input id="voicePhrase" class="big txt" value="Open Falcon terminal"> (any phrase you like)</p>
+      <p>This phrase opens <b>Falcon in the Grok Bot app</b>, not this dashboard. Set it up once in your phone's assistant:</p>
+      <ul>
+        <li><b>Android, Google Assistant</b>: Google Home app → Automations → + → Personal routine (or Assistant settings → Routines → New) → Add starter → "When I say to Google Assistant" → type <i id="vp1">Open Falcon terminal</i> → Add action → "Try adding your own" → type <i>open Grok Bot</i> (or pick an "Open app" action if your version lists one) → Save.</li>
+        <li><b>Samsung, Bixby</b>: open Bixby → ⋮ menu → Quick commands → + → "What you say to Bixby": <i id="vp2">Open Falcon terminal</i> → Add a command → "Type a command": <i>open Grok Bot</i> → Save. Say "Hi Bixby, …".</li>
+        <li><b>iPhone, Siri</b>: Shortcuts app → + → Add Action → "Open App" → choose Grok Bot → rename the shortcut to <i id="vp3">Open Falcon terminal</i>. Say "Hey Siri, <span id="vp4">Open Falcon terminal</span>" (Siri runs shortcuts by their name).</li>
+      </ul>
+      <p><b>Last step is manual:</b> in Grok Bot, tap Falcon, then tap the call button. As far as we know there is no link that starts a Falcon voice call in one step.</p>
+      <p>Optional second phrase, e.g. "Open quant terminal", can open this page: <code id="pwaUrl"></code> (Google/Bixby: open website or the installed app; Siri: "Open URLs" action).</p>
+      <p class="muted">Menu names change between phone and app versions; full steps and what could not be verified are in VOICE_ACTIVATION.md.</p>
+    </div>
+
+    <h2>About</h2>
+    <p class="muted">PAPER TRADING ONLY. No API keys, no real orders, nothing is sent anywhere except public market-data requests to Binance. Rule: daily close vs 50-day SMA (long/flat), stop 3×ATR(14,1d), fees 0.05% + slippage 0.05% per side, real funding history. Backtests are history, not a promise.</p>
+    <p class="muted" id="buildInfo"></p>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button data-tab="scanner" class="active">Scanner</button>
+  <button data-tab="positions">Positions <span id="posBadge" class="badge hidden">0</span></button>
+  <button data-tab="account">Account</button>
+  <button data-tab="settings">Settings</button>
+</nav>
+
+<div id="sheet" class="sheet hidden"><div class="sheet-body" id="sheetBody"></div></div>
+
+<script src="js/core.js"></script>
+<script src="js/data.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
