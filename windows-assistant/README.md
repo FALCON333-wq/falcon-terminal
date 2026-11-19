@@ -28,7 +28,7 @@ A separate Windows desktop/browser assistant built around a local Python service
 
 ## Start
 
-Open PowerShell in this folder. The setup script checks for a working Python interpreter (including the Windows `py` launcher); it will stop with an installation instruction if Python is missing. The launcher reuses an existing FALCON server on port 8765 or selects another free local port if that port belongs to another application:
+Open PowerShell in this folder. The setup script checks for a working Python interpreter (including the Windows `py` launcher); it will stop with an installation instruction if Python is missing. The launcher searches ports 8765–8875 for an existing FALCON instance before starting a new one. If another application owns a port, it selects the next free local port:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -40,7 +40,7 @@ Then open `http://127.0.0.1:8765`. The launcher opens the browser. Keep the Powe
 
 ## Data and privacy
 
-- The server binds to `127.0.0.1` only. It is not exposed to your LAN or public internet.
+- The server binds to `127.0.0.1` only. It is not exposed to your LAN or public internet. The launcher manages ports 8765–8875 and reuses an existing FALCON instance in that range.
 - Conversations, tasks and saved memories are stored in `data/falcon.db` on this PC.
 - Prompts are sent to the selected Ollama model. Local models process locally. A cloud model selected through Ollama sends prompts to that cloud provider; do not use cloud models for sensitive data unless you accept that provider's terms.
 - This first version does not read arbitrary files, run shell commands, control the mouse/keyboard, or execute unattended actions.
@@ -48,7 +48,7 @@ Then open `http://127.0.0.1:8765`. The launcher opens the browser. Keep the Powe
 
 ## Research workspace
 
-Open **Research** in the dashboard and submit a question. FALCON queries DuckDuckGo's public HTML search endpoint, then attempts bounded HTML retrieval for up to six result pages. It extracts a limited amount of readable page text and available publication-date metadata, and asks the selected Ollama model to draft a brief with numbered source references. The interface shows each page's retrieval status and whether date metadata was found. A successful fetch is not proof that a page's claims are true; dates may be absent, extraction may be incomplete, and some sites block automated access. Treat model summaries as analysis, inspect the linked sources, and verify important claims independently. Search availability depends on internet access and the upstream search service.
+Open **Research** in the dashboard and submit a question. FALCON queries DuckDuckGo's public HTML search endpoint, then attempts bounded HTML retrieval for up to five result pages. It extracts a limited amount of readable page text and common publication-date metadata, and asks the selected Ollama model to draft a brief with numbered source references. For Qwen3, the research prompt requests non-thinking mode and allows a larger final-answer token budget to avoid exhausting the response allowance in the separate thinking channel. The interface shows each page's retrieval status and whether date metadata was found. A successful fetch is not proof that a page's claims are true; dates may be absent, extraction may be incomplete, and some sites block automated access. The research endpoint reports model diagnostics if Ollama returns no final answer. Treat model summaries as analysis, inspect the linked sources, and verify important claims independently. Search availability depends on internet access and the upstream search service.
 
 ## Configuration
 
@@ -66,6 +66,8 @@ Edit `config.json` to change the Ollama endpoint or request timeout. The default
 - Installer / auto-updater
 
 These are planned stages, not claimed features. Voice input depends on browser support and may use the browser's speech service. Voice output uses the browser's built-in speech synthesis.
+
+See [HANDOVER.md](HANDOVER.md) for the full architecture, API inventory, operating procedure, validation checklist, backup/restore notes, and known limitations.
 
 ## Troubleshooting
 
