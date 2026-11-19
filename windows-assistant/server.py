@@ -54,10 +54,37 @@ class Handler(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length","0"))
         if size > 1_000_000: raise ValueError("Request too large (1 MB limit)")
         return json.loads(self.rfile.read(size) or b"{}")
+    def serve_static(self, path):
+        # Serve only the dashboard's known static assets; never expose arbitrary files.
+        assets = {
+            "/": ("index.html", "text/html; charset=utf-8"),
+            "/index.html": ("index.html", "text/html; charset=utf-8"),
+            "/style.css": ("style.css", "text/css; charset=utf-8"),
+            "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+        }
+        asset = assets.get(path)
+        if not asset:
+            return False
+        filename, content_type = asset
+        file_path = ROOT / filename
+        if not file_path.is_file():
+            self.send_json({"error": "Dashboard asset missing: " + filename}, 500)
+            return True
+        raw = file_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(raw)
+        return True
+
     def do_GET(self):
         path = urlparse(self.path).path
         try:
-            if path == "/api/status":
+            if path in ("/", "/index.html", "/style.css", "/app.js"):
+                self.serve_static(path)
+            elif path == "/api/status":
                 try:
                     info=ollama("/api/version")
                     self.send_json({"app":"FALCON","status":"online","ollama":"connected","ollama_version":info.get("version"),"data_dir":str(DATA)})
