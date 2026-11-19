@@ -2,21 +2,32 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 
-# Prefer a real python executable; the Microsoft Store execution alias can exist even when Python is absent.
+# Prefer the Windows Python Launcher. It resolves the installed interpreter
+# and bypasses the Microsoft Store python.exe execution alias.
 $PythonExe = $null
 $PythonArgs = @()
-$PythonCommand = Get-Command python -ErrorAction SilentlyContinue
-if ($PythonCommand) {
-  & $PythonCommand.Source --version *> $null
-  if ($LASTEXITCODE -eq 0) { $PythonExe = $PythonCommand.Source }
-}
-if (-not $PythonExe) {
-  $PyLauncher = Get-Command py -ErrorAction SilentlyContinue
-  if ($PyLauncher) {
-    & $PyLauncher.Source -3 --version *> $null
-    if ($LASTEXITCODE -eq 0) { $PythonExe = $PyLauncher.Source; $PythonArgs = @("-3") }
+$PyLauncher = Get-Command py -ErrorAction SilentlyContinue
+if ($PyLauncher) {
+  & $PyLauncher.Source -3 --version *> $null
+  if ($LASTEXITCODE -eq 0) {
+    $PythonExe = $PyLauncher.Source
+    $PythonArgs = @("-3")
   }
 }
+
+# Fall back to a real python.exe on PATH, explicitly skipping the Store alias.
+if (-not $PythonExe) {
+  $PythonCommands = @(Get-Command python -All -ErrorAction SilentlyContinue)
+  foreach ($Command in $PythonCommands) {
+    if ($Command.Source -match "\\Microsoft\\WindowsApps\\") { continue }
+    & $Command.Source --version *> $null
+    if ($LASTEXITCODE -eq 0) {
+      $PythonExe = $Command.Source
+      break
+    }
+  }
+}
+
 if (-not $PythonExe) {
   Write-Host "Python 3.10+ is required but was not found." -ForegroundColor Red
   Write-Host "Install: https://www.python.org/downloads/windows/"
