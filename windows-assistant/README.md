@@ -4,9 +4,9 @@ A separate Windows desktop/browser assistant built around a local Python service
 
 ## Included in this first delivery
 
-- Local web dashboard at `http://127.0.0.1:8765`
+- Local web dashboard on the first available port in `8765–8875`
 - Ollama model discovery and model selection, including any cloud-backed models exposed by the user's Ollama installation
-- Initial Research workspace: DuckDuckGo HTML search, up to six result links/snippets, and evidence-limited synthesis by the selected Ollama model
+- Research workspace: DuckDuckGo HTML search, up to five bounded page retrieval attempts, and evidence-limited synthesis by the selected Ollama model
 - Chat requests through Ollama's local API
 - Local SQLite conversation history
 - Explicitly saved, reviewable and deletable memories
@@ -36,7 +36,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\Launch-FALCON.ps1
 ```
 
-Then open `http://127.0.0.1:8765`. The launcher opens the browser. Keep the PowerShell window open while using FALCON; Ctrl+C stops the service.
+The launcher prints and opens the actual URL. Use that URL; the port may be different from 8765 when another app owns the default port. Keep the PowerShell window open while using FALCON; Ctrl+C stops the service.
 
 ## Data and privacy
 
@@ -59,7 +59,7 @@ Edit `config.json` to change the Ollama endpoint or request timeout. The default
 - Native Windows desktop shell / tray icon
 - Wake-word listening and continuous microphone mode
 - Native offline speech-to-text and text-to-speech engines
-- Full-page retrieval and source verification (the initial Research workspace analyzes search-result snippets only)
+- Browser-grade full-page rendering and independent source verification (research uses bounded text extraction and requires human review)
 - File workspace and code-editing agent
 - Permission-gated Windows automation
 - Multi-agent orchestration and scheduled background jobs
@@ -73,7 +73,7 @@ See [HANDOVER.md](HANDOVER.md) for the full architecture, API inventory, operati
 
 - **Ollama offline:** start Ollama and verify `http://127.0.0.1:11434/api/version`.
 - **No models:** run `ollama list`, then `ollama pull qwen3:4b`.
-- **Port busy:** close the other process using port 8765, or set a different `FALCON_PORT` before launching.
+- **Port busy:** the launcher scans ports 8765–8875 and selects an available one. Use the URL it prints.
 - **No voice input:** use current Microsoft Edge or Chrome and allow microphone permission.
 
 ## Security model
