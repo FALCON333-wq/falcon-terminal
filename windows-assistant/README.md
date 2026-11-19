@@ -48,7 +48,7 @@ Then open `http://127.0.0.1:8765`. The launcher opens the browser. Keep the Powe
 
 ## Research workspace
 
-Open **Research** in the dashboard and submit a question. FALCON queries DuckDuckGo's public HTML search endpoint, then asks the selected Ollama model to draft a brief using only the returned titles and snippets. The interface displays numbered source links. This is an initial research feature: it does not fetch or independently verify full source pages, and search availability depends on internet access and the upstream search service. Treat model summaries as analysis, not as independently verified facts.
+Open **Research** in the dashboard and submit a question. FALCON queries DuckDuckGo's public HTML search endpoint, then attempts bounded HTML retrieval for up to six result pages. It extracts a limited amount of readable page text and available publication-date metadata, and asks the selected Ollama model to draft a brief with numbered source references. The interface shows each page's retrieval status and whether date metadata was found. A successful fetch is not proof that a page's claims are true; dates may be absent, extraction may be incomplete, and some sites block automated access. Treat model summaries as analysis, inspect the linked sources, and verify important claims independently. Search availability depends on internet access and the upstream search service.
 
 ## Configuration
 
