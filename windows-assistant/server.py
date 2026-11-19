@@ -110,19 +110,30 @@ def search_web(query, limit=6):
 
 
 class PageTextParser(HTMLParser):
-    SKIP = {"script","style","noscript","svg","nav","footer","header","form"}
+    SKIP = {"script","style","noscript","svg","nav","footer","header","form","head"}
+    DATE_KEYS = {
+        "date","pubdate","publishdate","datepublished","article:published_time",
+        "og:published_time","parsely-pub-date","dc.date","dc.date.issued",
+        "citation_publication_date"
+    }
     def __init__(self):
         super().__init__()
         self.skip = 0
         self.parts = []
         self.title_parts = []
         self.in_title = False
+        self.date = ""
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag in self.SKIP: self.skip += 1
         if tag == "title": self.in_title = True
-        if tag == "meta" and attrs.get("name","").lower() in ("date","article:published_time","pubdate"):
-            self.date = attrs.get("content","")
+        if tag == "meta":
+            key = (attrs.get("property") or attrs.get("name") or attrs.get("itemprop") or "").lower()
+            value = attrs.get("content", "").strip()
+            if key in self.DATE_KEYS and value and not self.date:
+                self.date = value[:80]
+        if tag == "time" and attrs.get("datetime") and not self.date:
+            self.date = attrs["datetime"].strip()[:80]
     def handle_endtag(self, tag):
         if tag in self.SKIP and self.skip: self.skip -= 1
         if tag == "title": self.in_title = False
@@ -145,11 +156,21 @@ def fetch_page(source):
     except ValueError:
         pass
     req = urllib.request.Request(source["url"], headers={
-        "User-Agent":"Mozilla/5.0 (compatible; FALCONResearch/0.2; +http://localhost)",
+        "User-Agent":"Mozilla/5.0 (compatible; FALCONResearch/0.3)",
         "Accept":"text/html,application/xhtml+xml"
     })
     try:
         with urllib.request.urlopen(req, timeout=8) as response:
+            final_url = urlparse(response.geturl())
+            if final_url.scheme not in ("http","https") or not final_url.hostname:
+                return {**source,"fetch_status":"blocked_redirect","page_text":"","page_title":"","published_date":""}
+            try:
+                import ipaddress
+                final_ip = ipaddress.ip_address(final_url.hostname)
+                if not final_ip.is_global:
+                    return {**source,"fetch_status":"blocked_redirect","page_text":"","page_title":"","published_date":""}
+            except ValueError:
+                pass
             content_type = response.headers.get("Content-Type","").lower()
             if "html" not in content_type:
                 return {**source,"fetch_status":"unsupported_content_type","page_text":"","page_title":"","published_date":""}
@@ -157,14 +178,13 @@ def fetch_page(source):
             charset = response.headers.get_content_charset() or "utf-8"
             html = raw.decode(charset,errors="replace")
         parser = PageTextParser()
-        parser.date = ""
         parser.feed(html)
-        text = " ".join(parser.parts)
+        page_text = " ".join(parser.parts)
         return {**source,
-            "fetch_status":"fetched" if len(text)>250 else "insufficient_text",
+            "fetch_status":"fetched" if len(page_text)>250 else "insufficient_text",
             "page_title":" ".join(parser.title_parts)[:300],
-            "published_date":parser.date[:80],
-            "page_text":text[:5000]}
+            "published_date":parser.date,
+            "page_text":page_text[:5000]}
     except Exception as exc:
         return {**source,"fetch_status":"failed","fetch_error":str(exc)[:180],
             "page_text":"","page_title":"","published_date":""}
@@ -250,41 +270,51 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     sources=search_web(query, 5)
                 except Exception as e:
-                    return self.send_json({"error":"Web search failed: "+str(e)},502)
+                    return self.send_json({"error":"Web search failed: "+str(e)[:240]},502)
                 if not sources:
                     return self.send_json({"query":query,"sources":[],"report":"No search results were returned. Try a more specific query."})
                 requested=data.get("model") or "auto"
                 try: available=[m["name"] for m in ollama("/api/tags").get("models",[])]
                 except Exception as e:
-                    return self.send_json({"error":"Search completed, but Ollama is unavailable: "+str(e),"query":query,"sources":sources},503)
+                    return self.send_json({"error":"Search completed, but Ollama is unavailable: "+str(e)[:240],"query":query,"sources":sources},503)
                 if not available:
                     return self.send_json({"error":"Search completed, but no Ollama models are installed.","query":query,"sources":sources},503)
                 if requested == "auto":
                     requested=next((m for m in available if m.startswith("qwen3")), available[0])
                 if requested not in available:
                     return self.send_json({"error":"Selected model is not installed: "+requested,"query":query,"sources":sources},400)
-                # Fetch sources concurrently with strict per-page limits so one slow host cannot stall the whole job.
+
+                # Fetch at most five pages concurrently. A fetched page is evidence input,
+                # not proof that its claims are accurate.
                 with ThreadPoolExecutor(max_workers=min(5, len(sources))) as pool:
                     fetched=list(pool.map(fetch_page, sources))
-                evidence="\\n\\n".join(
-                    "["+str(i+1)+"] "+s["title"]+"\\nURL: "+s["url"]+
-                    "\\nFetch status: "+s["fetch_status"]+
-                    "\\nPage title: "+(s.get("page_title") or "(not available)")+
-                    "\\nPublished date metadata: "+(s.get("published_date") or "(not found)")+
-                    "\\nExtracted page text: "+((s.get("page_text") or "")[:1200] or "(page text unavailable; search snippet only)")+
-                    "\\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")
+                evidence="\n\n".join(
+                    "["+str(i+1)+"] "+s["title"]+"\nURL: "+s["url"]+
+                    "\nFetch status: "+s["fetch_status"]+
+                    "\nPage title: "+(s.get("page_title") or "(not available)")+
+                    "\nPublication date metadata: "+(s.get("published_date") or "(not found)")+
+                    "\nExtracted page text: "+((s.get("page_text") or "")[:850] or "(page text unavailable; search snippet only)")+
+                    "\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")[:450]
                     for i,s in enumerate(fetched)
                 )
-                prompt=("Prepare a research brief for this question: "+query+
-                    "\\nUse only the supplied extracted text and snippets. Clearly distinguish fetched page content from snippets. "+
-                    "Do not claim a page is independently verified merely because it fetched successfully. "+
-                    "Never invent dates; if publication dates are absent, state that. Cite every factual claim with [1], [2], etc. "+
-                    "Identify conflicting sources, weak evidence and unresolved questions.\\n\\n"+evidence)
+                prompt=("Prepare a concise research brief for this question: "+query+
+                    "\nUse only the supplied page text and search snippets. Clearly distinguish fetched page content from snippets. "+
+                    "Do not call a page independently verified merely because it fetched successfully. "+
+                    "Never invent dates, announcements, quotations, or source details. "+
+                    "A publication date is known only when explicit date metadata is supplied; otherwise say it is unavailable. "+
+                    "Cite each factual claim using only the supplied source numbers [1] through ["+str(len(fetched))+"]. "+
+                    "Do not invent or cite a source that does not support the claim. "+
+                    "Identify weak evidence, conflicting claims, and unresolved questions.\n\n"+evidence)
+                model_prompt=prompt+"\nReturn at most 250 words. Use short bullets. Cite factual claims."
+                # Qwen3 otherwise may spend the whole generation budget in its
+                # separate thinking channel. /no_think requests a normal final answer.
+                if requested.lower().startswith("qwen3"):
+                    model_prompt += "\n/no_think"
                 try:
                     answer=ollama("/api/chat",{"model":requested,"messages":[
-                        {"role":"system","content":"You are FALCON Research. Be concise and evidence-led. Never invent facts, sources, dates, or quotations. Search snippets are not full-page verification."},
-                        {"role":"user","content":prompt+"\\nReturn at most 350 words. Use short bullet points and cite factual claims."}
-                    ],"stream":False,"keep_alive":"10m","options":{"num_ctx":4096,"num_predict":384,"temperature":0.2}},timeout=600)
+                        {"role":"system","content":"You are FALCON Research. Produce a concise final answer, not a private reasoning trace. Be evidence-led. Never invent facts, dates, sources, or quotations. Search snippets are not full-page verification."},
+                        {"role":"user","content":model_prompt}
+                    ],"stream":False,"keep_alive":"10m","options":{"num_ctx":4096,"num_predict":768,"temperature":0.2}},timeout=600)
                 except Exception as e:
                     return self.send_json({"error":"Research analysis timed out or Ollama failed: "+str(e)[:240],
                         "query":query,"model":requested,
@@ -294,10 +324,8 @@ class Handler(BaseHTTPRequestHandler):
                 message=message if isinstance(message,dict) else {}
                 report=(message.get("content") or "").strip()
                 if not report:
-                    # Preserve Ollama diagnostics so an empty final answer is distinguishable
-                    # from a request that failed or exhausted its generation budget.
                     return self.send_json({
-                        "error":"Research model returned an empty final answer",
+                        "error":"Research model returned no final answer. Check Ollama diagnostics.",
                         "query":query,"model":requested,
                         "ollama_diagnostics":{
                             "response_keys":list(answer.keys()) if isinstance(answer,dict) else [],
@@ -313,9 +341,12 @@ class Handler(BaseHTTPRequestHandler):
                         "sources":[{k:v for k,v in item.items() if k!="page_text"} for item in fetched],
                         "evidence_scope":"Source retrieval completed; Ollama returned no final message content."
                     },502)
-                self.send_json({"query":query,"model":requested,"report":report,
+                result={"query":query,"model":requested,"report":report,
                     "sources":[{k:v for k,v in s.items() if k!="page_text"} for s in fetched],
-                    "evidence_scope":"FALCON attempted bounded HTML retrieval for each result. Check each source fetch_status. Page retrieval is not proof of factual accuracy; publication dates are reported only when page metadata exposed them."})
+                    "evidence_scope":"FALCON attempted bounded HTML retrieval for each result. A successful fetch is not proof of factual accuracy. Dates are included only when explicit page metadata was found."}
+                if isinstance(answer,dict) and answer.get("done_reason")=="length":
+                    result["generation_warning"]="The model reached its output-token limit; this report may be incomplete."
+                self.send_json(result)
             elif path == "/api/chat":
                 text=(data.get("message") or "").strip()
                 if not text: return self.send_json({"error":"Message is empty"},400)
