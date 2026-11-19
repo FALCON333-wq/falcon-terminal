@@ -100,6 +100,67 @@ def search_web(query, limit=6):
             break
     return clean
 
+
+class PageTextParser(HTMLParser):
+    SKIP = {"script","style","noscript","svg","nav","footer","header","form"}
+    def __init__(self):
+        super().__init__()
+        self.skip = 0
+        self.parts = []
+        self.title_parts = []
+        self.in_title = False
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag in self.SKIP: self.skip += 1
+        if tag == "title": self.in_title = True
+        if tag == "meta" and attrs.get("name","").lower() in ("date","article:published_time","pubdate"):
+            self.date = attrs.get("content","")
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self.skip: self.skip -= 1
+        if tag == "title": self.in_title = False
+    def handle_data(self, data):
+        value = " ".join(data.split())
+        if not value: return
+        if self.in_title: self.title_parts.append(value)
+        if not self.skip: self.parts.append(value)
+
+def fetch_page(source):
+    parsed = urlparse(source["url"])
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http","https") or not host or host in ("localhost",):
+        return {**source,"fetch_status":"blocked","page_text":"","page_title":"","published_date":""}
+    try:
+        import ipaddress
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:
+            return {**source,"fetch_status":"blocked","page_text":"","page_title":"","published_date":""}
+    except ValueError:
+        pass
+    req = urllib.request.Request(source["url"], headers={
+        "User-Agent":"Mozilla/5.0 (compatible; FALCONResearch/0.2; +http://localhost)",
+        "Accept":"text/html,application/xhtml+xml"
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            content_type = response.headers.get("Content-Type","").lower()
+            if "html" not in content_type:
+                return {**source,"fetch_status":"unsupported_content_type","page_text":"","page_title":"","published_date":""}
+            raw = response.read(750_000)
+            charset = response.headers.get_content_charset() or "utf-8"
+            html = raw.decode(charset,errors="replace")
+        parser = PageTextParser()
+        parser.date = ""
+        parser.feed(html)
+        text = " ".join(parser.parts)
+        return {**source,
+            "fetch_status":"fetched" if len(text)>250 else "insufficient_text",
+            "page_title":" ".join(parser.title_parts)[:300],
+            "published_date":parser.date[:80],
+            "page_text":text[:12000]}
+    except Exception as exc:
+        return {**source,"fetch_status":"failed","fetch_error":str(exc)[:180],
+            "page_text":"","page_title":"","published_date":""}
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "FALCON/0.1"
     def log_message(self, fmt, *args):
@@ -194,23 +255,31 @@ class Handler(BaseHTTPRequestHandler):
                     requested=next((m for m in available if m.startswith("qwen3")), available[0])
                 if requested not in available:
                     return self.send_json({"error":"Selected model is not installed: "+requested,"query":query,"sources":sources},400)
+                # Fetch a bounded amount of page text; failures remain visible and are never silently treated as evidence.
+                fetched=[fetch_page(s) for s in sources]
                 evidence="\\n\\n".join(
-                    "["+str(i+1)+"] "+s["title"]+"\\nURL: "+s["url"]+"\\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")
-                    for i,s in enumerate(sources)
+                    "["+str(i+1)+"] "+s["title"]+"\\nURL: "+s["url"]+
+                    "\\nFetch status: "+s["fetch_status"]+
+                    "\\nPage title: "+(s.get("page_title") or "(not available)")+
+                    "\\nPublished date metadata: "+(s.get("published_date") or "(not found)")+
+                    "\\nExtracted page text: "+(s.get("page_text") or "(page text unavailable; search snippet only)")+
+                    "\\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")
+                    for i,s in enumerate(fetched)
                 )
-                prompt=("Prepare a concise research brief for this question: "+query+
-                    "\\nUse ONLY the supplied search-result titles and snippets as evidence. "+
-                    "Do not pretend you opened or verified full pages. Separate supported findings from uncertainty. "+
-                    "Cite claims with [1], [2], etc. If snippets are insufficient, say what remains unverified.\\n\\n"+
-                    evidence)
+                prompt=("Prepare a research brief for this question: "+query+
+                    "\\nUse only the supplied extracted text and snippets. Clearly distinguish fetched page content from snippets. "+
+                    "Do not claim a page is independently verified merely because it fetched successfully. "+
+                    "Never invent dates; if publication dates are absent, state that. Cite every factual claim with [1], [2], etc. "+
+                    "Identify conflicting sources, weak evidence and unresolved questions.\\n\\n"+evidence)
                 answer=ollama("/api/chat",{"model":requested,"messages":[
                     {"role":"system","content":"You are FALCON Research. Be evidence-led. Never invent facts, sources, dates, or quotations. Search snippets are limited evidence, not full-page verification."},
                     {"role":"user","content":prompt}
                 ],"stream":False})
                 report=answer.get("message",{}).get("content","").strip()
                 if not report: return self.send_json({"error":"Research model returned an empty response","query":query,"sources":sources},502)
-                self.send_json({"query":query,"model":requested,"report":report,"sources":sources,
-                    "evidence_scope":"Search-result titles and snippets only; full source pages have not been independently retrieved."})
+                self.send_json({"query":query,"model":requested,"report":report,
+                    "sources":[{k:v for k,v in s.items() if k!="page_text"} for s in fetched],
+                    "evidence_scope":"FALCON attempted bounded HTML retrieval for each result. Check each source fetch_status. Page retrieval is not proof of factual accuracy; publication dates are reported only when page metadata exposed them."})
             elif path == "/api/chat":
                 text=(data.get("message") or "").strip()
                 if not text: return self.send_json({"error":"Message is empty"},400)
