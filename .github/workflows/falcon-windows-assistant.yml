@@ -1,0 +1,26 @@
+name: FALCON Windows Assistant checks
+on:
+  push:
+    branches: [feature/falcon-windows-assistant]
+    paths:
+      - "windows-assistant/**"
+      - ".github/workflows/falcon-windows-assistant.yml"
+  pull_request:
+    paths:
+      - "windows-assistant/**"
+      - ".github/workflows/falcon-windows-assistant.yml"
+jobs:
+  test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows-assistant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python
+        run: python -m py_compile server.py tests/test_server.py
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
