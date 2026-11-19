@@ -19,3 +19,28 @@ async function loadTasks(){const d=await api("/api/tasks");$("#taskList").innerH
 $("#memoryForm").onsubmit=async e=>{e.preventDefault();try{await api("/api/memory",{method:"POST",body:JSON.stringify({content:$("#memoryText").value})});$("#memoryText").value="";loadMemory()}catch(x){alert(x.message)}};
 async function loadMemory(){const d=await api("/api/memory");$("#memoryList").innerHTML="";d.memories.forEach(m=>{const el=document.createElement("div");el.className="item";const label=document.createElement("span");label.textContent=m.content;const del=document.createElement("button");del.textContent="Delete";del.onclick=async()=>{await api("/api/memory/"+m.id,{method:"DELETE"});loadMemory()};el.append(label,del);$("#memoryList").append(el)})}
 loadStatus();loadModels();loadHistory();setInterval(loadStatus,15000);
+$("#researchForm").addEventListener("submit",async e=>{
+ e.preventDefault();
+ const query=$("#researchQuery").value.trim();
+ if(!query)return;
+ const button=$("#researchButton"),status=$("#researchStatus"),report=$("#researchReport"),sourcesBox=$("#researchSources");
+ button.disabled=true;button.textContent="Researching…";
+ status.textContent="Searching the web, then asking your selected local model to analyze the returned evidence.";
+ report.textContent="";sourcesBox.innerHTML="";
+ try{
+  const result=await api("/api/research",{method:"POST",body:JSON.stringify({query,model:$("#modelSelect").value})});
+  report.textContent=result.report||"No report returned.";
+  status.textContent="Research complete · "+(result.model||"search only")+" · "+(result.sources||[]).length+" source results";
+  if(result.evidence_scope){const note=document.createElement("p");note.className="researchscope";note.textContent=result.evidence_scope;sourcesBox.append(note)}
+  (result.sources||[]).forEach((source,index)=>{
+   const card=document.createElement("div");card.className="sourcecard";
+   const number=document.createElement("span");number.className="sourcenumber";number.textContent="["+(index+1)+"]";
+   const body=document.createElement("div");body.className="sourcebody";
+   const link=document.createElement("a");link.href=source.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent=source.title||source.url;
+   const snippet=document.createElement("p");snippet.textContent=source.snippet||"No search snippet provided.";
+   const url=document.createElement("small");url.textContent=source.url;
+   body.append(link,snippet,url);card.append(number,body);sourcesBox.append(card);
+  });
+ }catch(error){status.textContent="Research failed: "+error.message;report.textContent="No verified report was produced. Check internet access, Ollama connectivity, and the selected model."}
+ finally{button.disabled=false;button.textContent="Research ↗"}
+});
