@@ -144,7 +144,17 @@ py -3 -m py_compile .\server.py
 
 No output and exit code 0 means the file compiled. This checks syntax only, not runtime behavior.
 
-### B. Find the active FALCON port
+### B. Research parser unit tests
+
+Run from the windows-assistant directory:
+
+\x60\x60\x60powershell
+py -3 -m unittest discover -s tests -v
+\x60\x60\x60
+
+These tests cover publication-date parsing, page text filtering, search-result parsing, and rejection of a loopback URL. They do not call Ollama or validate live web search.
+
+### C. Find the active FALCON port
 
 \x60\x60\x60powershell
 8765..8875 | ForEach-Object {
@@ -161,7 +171,7 @@ No output and exit code 0 means the file compiled. This checks syntax only, not 
 
 Expected status fields include app=FALCON, status=online, and ollama=connected.
 
-### C. Models
+### D. Models
 
 Replace 8766 with the port discovered above:
 
@@ -169,14 +179,14 @@ Replace 8766 with the port discovered above:
 Invoke-RestMethod "http://127.0.0.1:8766/api/models" | ConvertTo-Json -Depth 6
 \x60\x60\x60
 
-### D. Chat
+### E. Chat
 
 \x60\x60\x60powershell
 $body = @{ message = "Reply with exactly: FALCON CHAT TEST PASSED"; model = "qwen3:4b" } | ConvertTo-Json
 Invoke-RestMethod -Uri "http://127.0.0.1:8766/api/chat" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 180 | ConvertTo-Json -Depth 6
 \x60\x60\x60
 
-### E. Research
+### F. Research
 
 \x60\x60\x60powershell
 $body = @{ query = "Summarize three recent official AI product announcements. Include source links and dates only when supported."; model = "qwen3:4b" } | ConvertTo-Json
