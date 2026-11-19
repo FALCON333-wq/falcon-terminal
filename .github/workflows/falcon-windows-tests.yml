@@ -1,0 +1,33 @@
+name: FALCON Windows Assistant tests
+
+on:
+  push:
+    branches:
+      - feature/falcon-windows-assistant
+    paths:
+      - "windows-assistant/**"
+      - ".github/workflows/falcon-windows-tests.yml"
+  pull_request:
+    branches:
+      - feature/falcon-windows-assistant
+    paths:
+      - "windows-assistant/**"
+      - ".github/workflows/falcon-windows-tests.yml"
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: windows-assistant
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile backend
+        run: python -m py_compile server.py
+      - name: Run research parser tests
+        run: python -m unittest discover -s tests -v
