@@ -290,8 +290,29 @@ class Handler(BaseHTTPRequestHandler):
                         "query":query,"model":requested,
                         "sources":[{k:v for k,v in item.items() if k!="page_text"} for item in fetched],
                         "evidence_scope":"Source retrieval completed; AI analysis did not complete."},504)
-                report=answer.get("message",{}).get("content","").strip()
-                if not report: return self.send_json({"error":"Research model returned an empty response","query":query,"sources":sources},502)
+                message=answer.get("message") if isinstance(answer,dict) else None
+                message=message if isinstance(message,dict) else {}
+                report=(message.get("content") or "").strip()
+                if not report:
+                    # Preserve Ollama diagnostics so an empty final answer is distinguishable
+                    # from a request that failed or exhausted its generation budget.
+                    return self.send_json({
+                        "error":"Research model returned an empty final answer",
+                        "query":query,"model":requested,
+                        "ollama_diagnostics":{
+                            "response_keys":list(answer.keys()) if isinstance(answer,dict) else [],
+                            "message_keys":list(message.keys()),
+                            "thinking_characters":len(message.get("thinking") or ""),
+                            "done":answer.get("done") if isinstance(answer,dict) else None,
+                            "done_reason":answer.get("done_reason") if isinstance(answer,dict) else None,
+                            "prompt_eval_count":answer.get("prompt_eval_count") if isinstance(answer,dict) else None,
+                            "eval_count":answer.get("eval_count") if isinstance(answer,dict) else None,
+                            "total_duration":answer.get("total_duration") if isinstance(answer,dict) else None,
+                            "eval_duration":answer.get("eval_duration") if isinstance(answer,dict) else None
+                        },
+                        "sources":[{k:v for k,v in item.items() if k!="page_text"} for item in fetched],
+                        "evidence_scope":"Source retrieval completed; Ollama returned no final message content."
+                    },502)
                 self.send_json({"query":query,"model":requested,"report":report,
                     "sources":[{k:v for k,v in s.items() if k!="page_text"} for s in fetched],
                     "evidence_scope":"FALCON attempted bounded HTML retrieval for each result. Check each source fetch_status. Page retrieval is not proof of factual accuracy; publication dates are reported only when page metadata exposed them."})
