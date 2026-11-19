@@ -3,7 +3,8 @@ import json, os, sqlite3, urllib.request, urllib.error
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlparse as split_url, parse_qs, urlencode, unquote
+from html.parser import HTMLParser
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -40,6 +41,64 @@ def ollama(path, payload=None):
     req = urllib.request.Request(OLLAMA + path, data=data, headers={"Content-Type":"application/json"})
     with urllib.request.urlopen(req, timeout=int(config.get("request_timeout",180))) as res:
         return json.loads(res.read().decode("utf-8"))
+
+
+class SearchResultsParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.results = []
+        self.current = None
+        self.capture = None
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = attrs.get("class", "").split()
+        if tag == "a" and "result__a" in classes:
+            self.current = {"url": attrs.get("href", ""), "title": ""}
+            self.capture = "title"
+        elif self.current and tag in ("div", "a") and "result__snippet" in classes:
+            self.capture = "snippet"
+            self.current.setdefault("snippet", "")
+    def handle_data(self, data):
+        if self.current and self.capture:
+            self.current[self.capture] = self.current.get(self.capture, "") + data
+    def handle_endtag(self, tag):
+        if self.current and tag == "a" and self.capture == "title":
+            self.capture = None
+        elif self.current and self.capture == "snippet" and tag in ("div", "a"):
+            self.capture = None
+            if self.current.get("title") and self.current.get("url"):
+                self.results.append(self.current)
+                self.current = None
+
+def search_web(query, limit=6):
+    endpoint = "https://html.duckduckgo.com/html/?" + urlencode({"q": query})
+    req = urllib.request.Request(endpoint, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Accept": "text/html"
+    })
+    with urllib.request.urlopen(req, timeout=25) as response:
+        page = response.read(2_000_000).decode("utf-8", errors="replace")
+    parser = SearchResultsParser()
+    parser.feed(page)
+    clean = []
+    for item in parser.results:
+        raw_url = item["url"]
+        parsed = urlparse(raw_url)
+        if "duckduckgo.com" in (parsed.hostname or ""):
+            target = parse_qs(parsed.query).get("uddg", [""])[0]
+            if target:
+                raw_url = unquote(target)
+        parsed = urlparse(raw_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            continue
+        clean.append({
+            "title": " ".join(item.get("title", "").split())[:240],
+            "url": raw_url,
+            "snippet": " ".join(item.get("snippet", "").split())[:700]
+        })
+        if len(clean) >= limit:
+            break
+    return clean
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "FALCON/0.1"
@@ -115,7 +174,44 @@ class Handler(BaseHTTPRequestHandler):
         path=urlparse(self.path).path
         try:
             data=self.body()
-            if path == "/api/chat":
+            if path == "/api/research":
+                query=(data.get("query") or "").strip()
+                if not query: return self.send_json({"error":"Research query is required"},400)
+                if len(query)>500: return self.send_json({"error":"Research query must be 500 characters or fewer"},400)
+                try:
+                    sources=search_web(query, 6)
+                except Exception as e:
+                    return self.send_json({"error":"Web search failed: "+str(e)},502)
+                if not sources:
+                    return self.send_json({"query":query,"sources":[],"report":"No search results were returned. Try a more specific query."})
+                requested=data.get("model") or "auto"
+                try: available=[m["name"] for m in ollama("/api/tags").get("models",[])]
+                except Exception as e:
+                    return self.send_json({"error":"Search completed, but Ollama is unavailable: "+str(e),"query":query,"sources":sources},503)
+                if not available:
+                    return self.send_json({"error":"Search completed, but no Ollama models are installed.","query":query,"sources":sources},503)
+                if requested == "auto":
+                    requested=next((m for m in available if m.startswith("qwen3")), available[0])
+                if requested not in available:
+                    return self.send_json({"error":"Selected model is not installed: "+requested,"query":query,"sources":sources},400)
+                evidence="\\n\\n".join(
+                    "["+str(i+1)+"] "+s["title"]+"\\nURL: "+s["url"]+"\\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")
+                    for i,s in enumerate(sources)
+                )
+                prompt=("Prepare a concise research brief for this question: "+query+
+                    "\\nUse ONLY the supplied search-result titles and snippets as evidence. "+
+                    "Do not pretend you opened or verified full pages. Separate supported findings from uncertainty. "+
+                    "Cite claims with [1], [2], etc. If snippets are insufficient, say what remains unverified.\\n\\n"+
+                    evidence)
+                answer=ollama("/api/chat",{"model":requested,"messages":[
+                    {"role":"system","content":"You are FALCON Research. Be evidence-led. Never invent facts, sources, dates, or quotations. Search snippets are limited evidence, not full-page verification."},
+                    {"role":"user","content":prompt}
+                ],"stream":False})
+                report=answer.get("message",{}).get("content","").strip()
+                if not report: return self.send_json({"error":"Research model returned an empty response","query":query,"sources":sources},502)
+                self.send_json({"query":query,"model":requested,"report":report,"sources":sources,
+                    "evidence_scope":"Search-result titles and snippets only; full source pages have not been independently retrieved."})
+            elif path == "/api/chat":
                 text=(data.get("message") or "").strip()
                 if not text: return self.send_json({"error":"Message is empty"},400)
                 cid=str(data.get("conversation_id") or datetime.now().strftime("chat-%Y%m%d-%H%M%S"))
