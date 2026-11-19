@@ -45,7 +45,7 @@ No third-party Python packages are required by the current backend.
 
 Open PowerShell:
 
-\x60\x60\x60powershell
+```powershell
 cd C:\Users\meetb\falcon-terminal
 git switch feature/falcon-windows-assistant
 git pull origin feature/falcon-windows-assistant
@@ -53,7 +53,7 @@ cd .\windows-assistant
 Set-ExecutionPolicy -Scope Process Bypass
 .\Setup.ps1
 .\Launch-FALCON.ps1
-\x60\x60\x60
+```
 
 Keep the launcher terminal open. It prints the actual URL and local data directory. Open the printed URL if the browser does not open automatically.
 
@@ -138,9 +138,9 @@ Run these checks after each update.
 
 From the windows-assistant directory:
 
-\x60\x60\x60powershell
+```powershell
 py -3 -m py_compile .\server.py
-\x60\x60\x60
+```
 
 No output and exit code 0 means the file compiled. This checks syntax only, not runtime behavior.
 
@@ -148,15 +148,15 @@ No output and exit code 0 means the file compiled. This checks syntax only, not 
 
 Run from the windows-assistant directory:
 
-\x60\x60\x60powershell
+```powershell
 py -3 -m unittest discover -s tests -v
-\x60\x60\x60
+```
 
 These tests cover publication-date parsing, page text filtering, search-result parsing, and rejection of a loopback URL. They do not call Ollama or validate live web search.
 
 ### C. Find the active FALCON port
 
-\x60\x60\x60powershell
+```powershell
 8765..8875 | ForEach-Object {
     $p = $_
     try {
@@ -167,7 +167,7 @@ These tests cover publication-date parsing, page text filtering, search-result p
         }
     } catch {}
 }
-\x60\x60\x60
+```
 
 Expected status fields include app=FALCON, status=online, and ollama=connected.
 
@@ -175,23 +175,23 @@ Expected status fields include app=FALCON, status=online, and ollama=connected.
 
 Replace 8766 with the port discovered above:
 
-\x60\x60\x60powershell
+```powershell
 Invoke-RestMethod "http://127.0.0.1:8766/api/models" | ConvertTo-Json -Depth 6
-\x60\x60\x60
+```
 
 ### E. Chat
 
-\x60\x60\x60powershell
+```powershell
 $body = @{ message = "Reply with exactly: FALCON CHAT TEST PASSED"; model = "qwen3:4b" } | ConvertTo-Json
 Invoke-RestMethod -Uri "http://127.0.0.1:8766/api/chat" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 180 | ConvertTo-Json -Depth 6
-\x60\x60\x60
+```
 
 ### F. Research
 
-\x60\x60\x60powershell
+```powershell
 $body = @{ query = "Summarize three recent official AI product announcements. Include source links and dates only when supported."; model = "qwen3:4b" } | ConvertTo-Json
 Invoke-RestMethod -Uri "http://127.0.0.1:8766/api/research" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 700 | ConvertTo-Json -Depth 12
-\x60\x60\x60
+```
 
 Use the actual active port instead of 8766 if it differs. A successful research response must contain a non-empty report, a model name, and a sources array. Review the source statuses and dates; do not validate the report based only on HTTP 200.
 
