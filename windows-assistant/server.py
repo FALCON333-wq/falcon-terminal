@@ -91,7 +91,13 @@ def search_web(query, limit=6):
             if target:
                 raw_url = unquote(target)
         parsed = urlparse(raw_url)
+        host = (parsed.hostname or "").lower()
+        # Reject search-engine redirectors, ad click trackers and non-article destinations.
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            continue
+        if host == "duckduckgo.com" or host.endswith(".duckduckgo.com") or host == "bing.com" or host.endswith(".bing.com"):
+            continue
+        if any(key in parsed.query.lower() for key in ("ad_domain=", "ad_provider=", "click_metadata=", "msclkid=")):
             continue
         clean.append({
             "title": " ".join(item.get("title", "").split())[:240],
@@ -265,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
                     "\\nFetch status: "+s["fetch_status"]+
                     "\\nPage title: "+(s.get("page_title") or "(not available)")+
                     "\\nPublished date metadata: "+(s.get("published_date") or "(not found)")+
-                    "\\nExtracted page text: "+((s.get("page_text") or "")[:4000] or "(page text unavailable; search snippet only)")+
+                    "\\nExtracted page text: "+((s.get("page_text") or "")[:1200] or "(page text unavailable; search snippet only)")+
                     "\\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")
                     for i,s in enumerate(fetched)
                 )
@@ -276,9 +282,9 @@ class Handler(BaseHTTPRequestHandler):
                     "Identify conflicting sources, weak evidence and unresolved questions.\\n\\n"+evidence)
                 try:
                     answer=ollama("/api/chat",{"model":requested,"messages":[
-                        {"role":"system","content":"You are FALCON Research. Be evidence-led. Never invent facts, sources, dates, or quotations. Search snippets are limited evidence, not full-page verification."},
-                        {"role":"user","content":prompt}
-                    ],"stream":False},timeout=300)
+                        {"role":"system","content":"You are FALCON Research. Be concise and evidence-led. Never invent facts, sources, dates, or quotations. Search snippets are not full-page verification."},
+                        {"role":"user","content":prompt+"\\nReturn at most 350 words. Use short bullet points and cite factual claims."}
+                    ],"stream":False,"keep_alive":"10m","options":{"num_ctx":4096,"num_predict":384,"temperature":0.2}},timeout=600)
                 except Exception as e:
                     return self.send_json({"error":"Research analysis timed out or Ollama failed: "+str(e)[:240],
                         "query":query,"model":requested,
