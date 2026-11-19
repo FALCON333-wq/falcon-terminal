@@ -293,8 +293,8 @@ class Handler(BaseHTTPRequestHandler):
                     "\nFetch status: "+s["fetch_status"]+
                     "\nPage title: "+(s.get("page_title") or "(not available)")+
                     "\nPublication date metadata: "+(s.get("published_date") or "(not found)")+
-                    "\nExtracted page text: "+((s.get("page_text") or "")[:850] or "(page text unavailable; search snippet only)")+
-                    "\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")[:450]
+                    "\nExtracted page text: "+((s.get("page_text") or "")[:500] or "(page text unavailable; search snippet only)")+
+                    "\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")[:250]
                     for i,s in enumerate(fetched)
                 )
                 prompt=("Prepare a concise research brief for this question: "+query+
@@ -305,16 +305,19 @@ class Handler(BaseHTTPRequestHandler):
                     "Cite each factual claim using only the supplied source numbers [1] through ["+str(len(fetched))+"]. "+
                     "Do not invent or cite a source that does not support the claim. "+
                     "Identify weak evidence, conflicting claims, and unresolved questions.\n\n"+evidence)
-                model_prompt=prompt+"\nReturn at most 250 words. Use short bullets. Cite factual claims."
-                # Qwen3 otherwise may spend the whole generation budget in its
-                # separate thinking channel. /no_think requests a normal final answer.
+                model_prompt=prompt+"\nReturn at most 180 words. Use short bullets. Cite factual claims. If evidence is weak, say so."
+                # Ollama's explicit think=false control is used for Qwen3. Keep
+                # /no_think as an additional prompt-level compatibility signal.
                 if requested.lower().startswith("qwen3"):
-                    model_prompt += "\n/no_think"
+                    model_prompt = "/no_think\n" + model_prompt
+                research_payload={"model":requested,"messages":[
+                    {"role":"system","content":"You are FALCON Research. Return the final answer immediately. Do not provide chain-of-thought or a reasoning trace. Be evidence-led. Never invent facts, dates, sources, or quotations. Search snippets are not full-page verification."},
+                    {"role":"user","content":model_prompt}
+                ],"stream":False,"keep_alive":"10m","options":{"num_ctx":3072,"num_predict":512,"temperature":0.1}}
+                if requested.lower().startswith("qwen3"):
+                    research_payload["think"]=False
                 try:
-                    answer=ollama("/api/chat",{"model":requested,"messages":[
-                        {"role":"system","content":"You are FALCON Research. Produce a concise final answer, not a private reasoning trace. Be evidence-led. Never invent facts, dates, sources, or quotations. Search snippets are not full-page verification."},
-                        {"role":"user","content":model_prompt}
-                    ],"stream":False,"keep_alive":"10m","options":{"num_ctx":4096,"num_predict":768,"temperature":0.2}},timeout=600)
+                    answer=ollama("/api/chat",research_payload,timeout=600)
                 except Exception as e:
                     return self.send_json({"error":"Research analysis timed out or Ollama failed: "+str(e)[:240],
                         "query":query,"model":requested,
