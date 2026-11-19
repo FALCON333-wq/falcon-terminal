@@ -27,7 +27,7 @@ A separate Windows desktop/browser assistant built around a local Python service
 
 ## Start
 
-Open PowerShell in this folder:
+Open PowerShell in this folder. The setup script checks for a working Python interpreter (including the Windows `py` launcher); it will stop with an installation instruction if Python is missing. The launcher reuses an existing FALCON server on port 8765 or selects another free local port if that port belongs to another application:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
