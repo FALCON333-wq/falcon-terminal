@@ -25,7 +25,7 @@ $("#researchForm").addEventListener("submit",async e=>{
  if(!query)return;
  const button=$("#researchButton"),status=$("#researchStatus"),report=$("#researchReport"),sourcesBox=$("#researchSources");
  button.disabled=true;button.textContent="Researching…";
- status.textContent="Searching the web, then asking your selected local model to analyze the returned evidence.";
+ status.textContent="Searching the web, retrieving source pages where possible, then asking your local model to analyze the extracted evidence.";
  report.textContent="";sourcesBox.innerHTML="";
  try{
   const result=await api("/api/research",{method:"POST",body:JSON.stringify({query,model:$("#modelSelect").value})});
@@ -37,9 +37,10 @@ $("#researchForm").addEventListener("submit",async e=>{
    const number=document.createElement("span");number.className="sourcenumber";number.textContent="["+(index+1)+"]";
    const body=document.createElement("div");body.className="sourcebody";
    const link=document.createElement("a");link.href=source.url;link.target="_blank";link.rel="noopener noreferrer";link.textContent=source.title||source.url;
-   const snippet=document.createElement("p");snippet.textContent=source.snippet||"No search snippet provided.";
+   const snippet=document.createElement("p");snippet.textContent="Search preview: "+(source.snippet||"No search snippet provided.");
+   const meta=document.createElement("small");meta.textContent="Page retrieval: "+(source.fetch_status||"not attempted")+(source.published_date?" · Date metadata: "+source.published_date:" · Publication date not found");
    const url=document.createElement("small");url.textContent=source.url;
-   body.append(link,snippet,url);card.append(number,body);sourcesBox.append(card);
+   body.append(link,snippet,meta,url);card.append(number,body);sourcesBox.append(card);
   });
  }catch(error){status.textContent="Research failed: "+error.message;report.textContent="No verified report was produced. Check internet access, Ollama connectivity, and the selected model."}
  finally{button.disabled=false;button.textContent="Research ↗"}
