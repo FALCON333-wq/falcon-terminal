@@ -99,3 +99,21 @@ footer{border-color:rgba(113,184,211,.18)}
  .orb:after{inset:-14px}
  .welcome{padding-inline:4px}
 }
+
+/* Research workspace */
+.researchform{display:flex;gap:10px;max-width:900px}
+.researchform input{flex:1;min-width:0}
+.researchform button:disabled{opacity:.65;cursor:wait}
+.researchstatus{margin:18px 0 8px;color:var(--cyan);font-size:12px;min-height:20px}
+.researchreport{max-width:1000px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.75;color:#dce9f8;background:linear-gradient(145deg,rgba(16,31,51,.9),rgba(8,18,33,.9));border:1px solid var(--line);border-radius:13px;padding:20px;min-height:20px}
+.researchsources{display:grid;gap:10px;max-width:1000px;margin-top:15px}
+.sourcecard{display:flex;gap:13px;padding:14px;border:1px solid var(--line);border-radius:10px;background:rgba(13,25,42,.84)}
+.sourcenumber{color:var(--cyan);font-weight:700}
+.sourcebody{min-width:0}
+.sourcebody a{color:#9fe9f0;text-decoration:none;font-weight:650}
+.sourcebody a:hover{text-decoration:underline}
+.sourcebody p{color:#a8b8ca;margin:6px 0;font-size:13px}
+.sourcebody small,.researchscope,.researchnote{color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+.researchscope{margin:4px 0}
+.researchnote{max-width:1000px;margin:16px 0 24px;line-height:1.6}
+@media(max-width:760px){.researchform{flex-direction:column}.researchform button{align-self:flex-start}.researchreport{padding:14px}}
