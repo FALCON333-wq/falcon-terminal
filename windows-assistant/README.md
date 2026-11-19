@@ -6,6 +6,7 @@ A separate Windows desktop/browser assistant built around a local Python service
 
 - Local web dashboard at `http://127.0.0.1:8765`
 - Ollama model discovery and model selection, including any cloud-backed models exposed by the user's Ollama installation
+- Initial Research workspace: DuckDuckGo HTML search, up to six result links/snippets, and evidence-limited synthesis by the selected Ollama model
 - Chat requests through Ollama's local API
 - Local SQLite conversation history
 - Explicitly saved, reviewable and deletable memories
@@ -45,6 +46,10 @@ Then open `http://127.0.0.1:8765`. The launcher opens the browser. Keep the Powe
 - This first version does not read arbitrary files, run shell commands, control the mouse/keyboard, or execute unattended actions.
 - Do not put API keys or passwords into memory or chat.
 
+## Research workspace
+
+Open **Research** in the dashboard and submit a question. FALCON queries DuckDuckGo's public HTML search endpoint, then asks the selected Ollama model to draft a brief using only the returned titles and snippets. The interface displays numbered source links. This is an initial research feature: it does not fetch or independently verify full source pages, and search availability depends on internet access and the upstream search service. Treat model summaries as analysis, not as independently verified facts.
+
 ## Configuration
 
 Edit `config.json` to change the Ollama endpoint or request timeout. The default is `http://127.0.0.1:11434`.
@@ -54,7 +59,7 @@ Edit `config.json` to change the Ollama endpoint or request timeout. The default
 - Native Windows desktop shell / tray icon
 - Wake-word listening and continuous microphone mode
 - Native offline speech-to-text and text-to-speech engines
-- Browser search and source-cited research agent
+- Full-page retrieval and source verification (the initial Research workspace analyzes search-result snippets only)
 - File workspace and code-editing agent
 - Permission-gated Windows automation
 - Multi-agent orchestration and scheduled background jobs
