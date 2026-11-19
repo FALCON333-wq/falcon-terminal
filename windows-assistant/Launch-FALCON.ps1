@@ -43,18 +43,21 @@ try {
   Write-Host "Ollama is not responding. Start Ollama before chatting." -ForegroundColor Yellow
 }
 
-# Reuse an already-running FALCON server if one is present on the default port.
-$Port = 8765
-try {
-  $Existing = Invoke-RestMethod "http://127.0.0.1:$Port/api/status" -TimeoutSec 2
-  if ($Existing.app -eq "FALCON") {
-    Write-Host "FALCON is already running on port $Port. Opening it." -ForegroundColor Green
-    Start-Process "http://127.0.0.1:$Port"
-    exit 0
-  }
-} catch { }
+# Reuse FALCON if it is already running anywhere in the managed port range.
+# This avoids starting duplicate instances when another app owns 8765.
+for ($CandidatePort = 8765; $CandidatePort -le 8875; $CandidatePort++) {
+  try {
+    $Existing = Invoke-RestMethod "http://127.0.0.1:$CandidatePort/api/status" -TimeoutSec 2
+    if ($Existing.app -eq "FALCON") {
+      Write-Host "FALCON is already running on port $CandidatePort. Opening it." -ForegroundColor Green
+      Start-Process "http://127.0.0.1:$CandidatePort"
+      exit 0
+    }
+  } catch { }
+}
 
 # If another application owns the default port, find a free local port automatically.
+$Port = 8765
 while ($true) {
   $Tcp = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
   try {
