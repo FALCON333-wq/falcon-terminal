@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, urlparse as split_url, parse_qs, urlencode, unquote
 from html.parser import HTMLParser
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -36,10 +37,11 @@ def connect():
 def now():
     return datetime.now(timezone.utc).isoformat()
 
-def ollama(path, payload=None):
+def ollama(path, payload=None, timeout=None):
     data = None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(OLLAMA + path, data=data, headers={"Content-Type":"application/json"})
-    with urllib.request.urlopen(req, timeout=int(config.get("request_timeout",180))) as res:
+    effective_timeout = int(timeout if timeout is not None else config.get("request_timeout",180))
+    with urllib.request.urlopen(req, timeout=effective_timeout) as res:
         return json.loads(res.read().decode("utf-8"))
 
 
@@ -141,11 +143,11 @@ def fetch_page(source):
         "Accept":"text/html,application/xhtml+xml"
     })
     try:
-        with urllib.request.urlopen(req, timeout=12) as response:
+        with urllib.request.urlopen(req, timeout=8) as response:
             content_type = response.headers.get("Content-Type","").lower()
             if "html" not in content_type:
                 return {**source,"fetch_status":"unsupported_content_type","page_text":"","page_title":"","published_date":""}
-            raw = response.read(750_000)
+            raw = response.read(350_000)
             charset = response.headers.get_content_charset() or "utf-8"
             html = raw.decode(charset,errors="replace")
         parser = PageTextParser()
@@ -156,7 +158,7 @@ def fetch_page(source):
             "fetch_status":"fetched" if len(text)>250 else "insufficient_text",
             "page_title":" ".join(parser.title_parts)[:300],
             "published_date":parser.date[:80],
-            "page_text":text[:12000]}
+            "page_text":text[:5000]}
     except Exception as exc:
         return {**source,"fetch_status":"failed","fetch_error":str(exc)[:180],
             "page_text":"","page_title":"","published_date":""}
@@ -240,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not query: return self.send_json({"error":"Research query is required"},400)
                 if len(query)>500: return self.send_json({"error":"Research query must be 500 characters or fewer"},400)
                 try:
-                    sources=search_web(query, 6)
+                    sources=search_web(query, 5)
                 except Exception as e:
                     return self.send_json({"error":"Web search failed: "+str(e)},502)
                 if not sources:
@@ -255,14 +257,15 @@ class Handler(BaseHTTPRequestHandler):
                     requested=next((m for m in available if m.startswith("qwen3")), available[0])
                 if requested not in available:
                     return self.send_json({"error":"Selected model is not installed: "+requested,"query":query,"sources":sources},400)
-                # Fetch a bounded amount of page text; failures remain visible and are never silently treated as evidence.
-                fetched=[fetch_page(s) for s in sources]
+                # Fetch sources concurrently with strict per-page limits so one slow host cannot stall the whole job.
+                with ThreadPoolExecutor(max_workers=min(5, len(sources))) as pool:
+                    fetched=list(pool.map(fetch_page, sources))
                 evidence="\\n\\n".join(
                     "["+str(i+1)+"] "+s["title"]+"\\nURL: "+s["url"]+
                     "\\nFetch status: "+s["fetch_status"]+
                     "\\nPage title: "+(s.get("page_title") or "(not available)")+
                     "\\nPublished date metadata: "+(s.get("published_date") or "(not found)")+
-                    "\\nExtracted page text: "+(s.get("page_text") or "(page text unavailable; search snippet only)")+
+                    "\\nExtracted page text: "+((s.get("page_text") or "")[:4000] or "(page text unavailable; search snippet only)")+
                     "\\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")
                     for i,s in enumerate(fetched)
                 )
@@ -271,10 +274,16 @@ class Handler(BaseHTTPRequestHandler):
                     "Do not claim a page is independently verified merely because it fetched successfully. "+
                     "Never invent dates; if publication dates are absent, state that. Cite every factual claim with [1], [2], etc. "+
                     "Identify conflicting sources, weak evidence and unresolved questions.\\n\\n"+evidence)
-                answer=ollama("/api/chat",{"model":requested,"messages":[
-                    {"role":"system","content":"You are FALCON Research. Be evidence-led. Never invent facts, sources, dates, or quotations. Search snippets are limited evidence, not full-page verification."},
-                    {"role":"user","content":prompt}
-                ],"stream":False})
+                try:
+                    answer=ollama("/api/chat",{"model":requested,"messages":[
+                        {"role":"system","content":"You are FALCON Research. Be evidence-led. Never invent facts, sources, dates, or quotations. Search snippets are limited evidence, not full-page verification."},
+                        {"role":"user","content":prompt}
+                    ],"stream":False},timeout=300)
+                except Exception as e:
+                    return self.send_json({"error":"Research analysis timed out or Ollama failed: "+str(e)[:240],
+                        "query":query,"model":requested,
+                        "sources":[{k:v for k,v in item.items() if k!="page_text"} for item in fetched],
+                        "evidence_scope":"Source retrieval completed; AI analysis did not complete."},504)
                 report=answer.get("message",{}).get("content","").strip()
                 if not report: return self.send_json({"error":"Research model returned an empty response","query":query,"sources":sources},502)
                 self.send_json({"query":query,"model":requested,"report":report,
