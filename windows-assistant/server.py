@@ -3,7 +3,9 @@ import json, os, sqlite3, urllib.request, urllib.error
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlparse as split_url, parse_qs, urlencode, unquote
+from html.parser import HTMLParser
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -35,11 +37,157 @@ def connect():
 def now():
     return datetime.now(timezone.utc).isoformat()
 
-def ollama(path, payload=None):
+def ollama(path, payload=None, timeout=None):
     data = None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(OLLAMA + path, data=data, headers={"Content-Type":"application/json"})
-    with urllib.request.urlopen(req, timeout=int(config.get("request_timeout",180))) as res:
+    effective_timeout = int(timeout if timeout is not None else config.get("request_timeout",180))
+    with urllib.request.urlopen(req, timeout=effective_timeout) as res:
         return json.loads(res.read().decode("utf-8"))
+
+
+class SearchResultsParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.results = []
+        self.current = None
+        self.capture = None
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = attrs.get("class", "").split()
+        if tag == "a" and "result__a" in classes:
+            self.current = {"url": attrs.get("href", ""), "title": ""}
+            self.capture = "title"
+        elif self.current and tag in ("div", "a") and "result__snippet" in classes:
+            self.capture = "snippet"
+            self.current.setdefault("snippet", "")
+    def handle_data(self, data):
+        if self.current and self.capture:
+            self.current[self.capture] = self.current.get(self.capture, "") + data
+    def handle_endtag(self, tag):
+        if self.current and tag == "a" and self.capture == "title":
+            self.capture = None
+        elif self.current and self.capture == "snippet" and tag in ("div", "a"):
+            self.capture = None
+            if self.current.get("title") and self.current.get("url"):
+                self.results.append(self.current)
+                self.current = None
+
+def search_web(query, limit=6):
+    endpoint = "https://html.duckduckgo.com/html/?" + urlencode({"q": query})
+    req = urllib.request.Request(endpoint, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Accept": "text/html"
+    })
+    with urllib.request.urlopen(req, timeout=25) as response:
+        page = response.read(2_000_000).decode("utf-8", errors="replace")
+    parser = SearchResultsParser()
+    parser.feed(page)
+    clean = []
+    for item in parser.results:
+        raw_url = item["url"]
+        parsed = urlparse(raw_url)
+        if "duckduckgo.com" in (parsed.hostname or ""):
+            target = parse_qs(parsed.query).get("uddg", [""])[0]
+            if target:
+                raw_url = unquote(target)
+        parsed = urlparse(raw_url)
+        host = (parsed.hostname or "").lower()
+        # Reject search-engine redirectors, ad click trackers and non-article destinations.
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            continue
+        if host == "duckduckgo.com" or host.endswith(".duckduckgo.com") or host == "bing.com" or host.endswith(".bing.com"):
+            continue
+        if any(key in parsed.query.lower() for key in ("ad_domain=", "ad_provider=", "click_metadata=", "msclkid=")):
+            continue
+        clean.append({
+            "title": " ".join(item.get("title", "").split())[:240],
+            "url": raw_url,
+            "snippet": " ".join(item.get("snippet", "").split())[:700]
+        })
+        if len(clean) >= limit:
+            break
+    return clean
+
+
+class PageTextParser(HTMLParser):
+    SKIP = {"script","style","noscript","svg","nav","footer","header","form","head"}
+    DATE_KEYS = {
+        "date","pubdate","publishdate","datepublished","article:published_time",
+        "og:published_time","parsely-pub-date","dc.date","dc.date.issued",
+        "citation_publication_date"
+    }
+    def __init__(self):
+        super().__init__()
+        self.skip = 0
+        self.parts = []
+        self.title_parts = []
+        self.in_title = False
+        self.date = ""
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag in self.SKIP: self.skip += 1
+        if tag == "title": self.in_title = True
+        if tag == "meta":
+            key = (attrs.get("property") or attrs.get("name") or attrs.get("itemprop") or "").lower()
+            value = attrs.get("content", "").strip()
+            if key in self.DATE_KEYS and value and not self.date:
+                self.date = value[:80]
+        if tag == "time" and attrs.get("datetime") and not self.date:
+            self.date = attrs["datetime"].strip()[:80]
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self.skip: self.skip -= 1
+        if tag == "title": self.in_title = False
+    def handle_data(self, data):
+        value = " ".join(data.split())
+        if not value: return
+        if self.in_title: self.title_parts.append(value)
+        if not self.skip: self.parts.append(value)
+
+def fetch_page(source):
+    parsed = urlparse(source["url"])
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http","https") or not host or host in ("localhost",):
+        return {**source,"fetch_status":"blocked","page_text":"","page_title":"","published_date":""}
+    try:
+        import ipaddress
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:
+            return {**source,"fetch_status":"blocked","page_text":"","page_title":"","published_date":""}
+    except ValueError:
+        pass
+    req = urllib.request.Request(source["url"], headers={
+        "User-Agent":"Mozilla/5.0 (compatible; FALCONResearch/0.3)",
+        "Accept":"text/html,application/xhtml+xml"
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            final_url = urlparse(response.geturl())
+            if final_url.scheme not in ("http","https") or not final_url.hostname:
+                return {**source,"fetch_status":"blocked_redirect","page_text":"","page_title":"","published_date":""}
+            try:
+                import ipaddress
+                final_ip = ipaddress.ip_address(final_url.hostname)
+                if not final_ip.is_global:
+                    return {**source,"fetch_status":"blocked_redirect","page_text":"","page_title":"","published_date":""}
+            except ValueError:
+                pass
+            content_type = response.headers.get("Content-Type","").lower()
+            if "html" not in content_type:
+                return {**source,"fetch_status":"unsupported_content_type","page_text":"","page_title":"","published_date":""}
+            raw = response.read(350_000)
+            charset = response.headers.get_content_charset() or "utf-8"
+            html = raw.decode(charset,errors="replace")
+        parser = PageTextParser()
+        parser.feed(html)
+        page_text = " ".join(parser.parts)
+        return {**source,
+            "fetch_status":"fetched" if len(page_text)>250 else "insufficient_text",
+            "page_title":" ".join(parser.title_parts)[:300],
+            "published_date":parser.date,
+            "page_text":page_text[:5000]}
+    except Exception as exc:
+        return {**source,"fetch_status":"failed","fetch_error":str(exc)[:180],
+            "page_text":"","page_title":"","published_date":""}
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "FALCON/0.1"
@@ -54,10 +202,37 @@ class Handler(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length","0"))
         if size > 1_000_000: raise ValueError("Request too large (1 MB limit)")
         return json.loads(self.rfile.read(size) or b"{}")
+    def serve_static(self, path):
+        # Serve only the dashboard's known static assets; never expose arbitrary files.
+        assets = {
+            "/": ("index.html", "text/html; charset=utf-8"),
+            "/index.html": ("index.html", "text/html; charset=utf-8"),
+            "/style.css": ("style.css", "text/css; charset=utf-8"),
+            "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+        }
+        asset = assets.get(path)
+        if not asset:
+            return False
+        filename, content_type = asset
+        file_path = ROOT / filename
+        if not file_path.is_file():
+            self.send_json({"error": "Dashboard asset missing: " + filename}, 500)
+            return True
+        raw = file_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(raw)
+        return True
+
     def do_GET(self):
         path = urlparse(self.path).path
         try:
-            if path == "/api/status":
+            if path in ("/", "/index.html", "/style.css", "/app.js"):
+                self.serve_static(path)
+            elif path == "/api/status":
                 try:
                     info=ollama("/api/version")
                     self.send_json({"app":"FALCON","status":"online","ollama":"connected","ollama_version":info.get("version"),"data_dir":str(DATA)})
@@ -88,7 +263,94 @@ class Handler(BaseHTTPRequestHandler):
         path=urlparse(self.path).path
         try:
             data=self.body()
-            if path == "/api/chat":
+            if path == "/api/research":
+                query=(data.get("query") or "").strip()
+                if not query: return self.send_json({"error":"Research query is required"},400)
+                if len(query)>500: return self.send_json({"error":"Research query must be 500 characters or fewer"},400)
+                try:
+                    sources=search_web(query, 5)
+                except Exception as e:
+                    return self.send_json({"error":"Web search failed: "+str(e)[:240]},502)
+                if not sources:
+                    return self.send_json({"query":query,"sources":[],"report":"No search results were returned. Try a more specific query."})
+                requested=data.get("model") or "auto"
+                try: available=[m["name"] for m in ollama("/api/tags").get("models",[])]
+                except Exception as e:
+                    return self.send_json({"error":"Search completed, but Ollama is unavailable: "+str(e)[:240],"query":query,"sources":sources},503)
+                if not available:
+                    return self.send_json({"error":"Search completed, but no Ollama models are installed.","query":query,"sources":sources},503)
+                if requested == "auto":
+                    requested=next((m for m in available if m.startswith("qwen3")), available[0])
+                if requested not in available:
+                    return self.send_json({"error":"Selected model is not installed: "+requested,"query":query,"sources":sources},400)
+
+                # Fetch at most five pages concurrently. A fetched page is evidence input,
+                # not proof that its claims are accurate.
+                with ThreadPoolExecutor(max_workers=min(5, len(sources))) as pool:
+                    fetched=list(pool.map(fetch_page, sources))
+                evidence="\n\n".join(
+                    "["+str(i+1)+"] "+s["title"]+"\nURL: "+s["url"]+
+                    "\nFetch status: "+s["fetch_status"]+
+                    "\nPage title: "+(s.get("page_title") or "(not available)")+
+                    "\nPublication date metadata: "+(s.get("published_date") or "(not found)")+
+                    "\nExtracted page text: "+((s.get("page_text") or "")[:500] or "(page text unavailable; search snippet only)")+
+                    "\nSearch snippet: "+(s["snippet"] or "(No snippet supplied)")[:250]
+                    for i,s in enumerate(fetched)
+                )
+                prompt=("Prepare a concise research brief for this question: "+query+
+                    "\nUse only the supplied page text and search snippets. Clearly distinguish fetched page content from snippets. "+
+                    "Do not call a page independently verified merely because it fetched successfully. "+
+                    "Never invent dates, announcements, quotations, or source details. "+
+                    "A publication date is known only when explicit date metadata is supplied; otherwise say it is unavailable. "+
+                    "Cite each factual claim using only the supplied source numbers [1] through ["+str(len(fetched))+"]. "+
+                    "Do not invent or cite a source that does not support the claim. "+
+                    "Identify weak evidence, conflicting claims, and unresolved questions.\n\n"+evidence)
+                model_prompt=prompt+"\nReturn at most 180 words. Use short bullets. Cite factual claims. If evidence is weak, say so."
+                # Ollama's explicit think=false control is used for Qwen3. Keep
+                # /no_think as an additional prompt-level compatibility signal.
+                if requested.lower().startswith("qwen3"):
+                    model_prompt = "/no_think\n" + model_prompt
+                research_payload={"model":requested,"messages":[
+                    {"role":"system","content":"You are FALCON Research. Return the final answer immediately. Do not provide chain-of-thought or a reasoning trace. Be evidence-led. Never invent facts, dates, sources, or quotations. Search snippets are not full-page verification."},
+                    {"role":"user","content":model_prompt}
+                ],"stream":False,"keep_alive":"10m","options":{"num_ctx":3072,"num_predict":512,"temperature":0.1}}
+                if requested.lower().startswith("qwen3"):
+                    research_payload["think"]=False
+                try:
+                    answer=ollama("/api/chat",research_payload,timeout=600)
+                except Exception as e:
+                    return self.send_json({"error":"Research analysis timed out or Ollama failed: "+str(e)[:240],
+                        "query":query,"model":requested,
+                        "sources":[{k:v for k,v in item.items() if k!="page_text"} for item in fetched],
+                        "evidence_scope":"Source retrieval completed; AI analysis did not complete."},504)
+                message=answer.get("message") if isinstance(answer,dict) else None
+                message=message if isinstance(message,dict) else {}
+                report=(message.get("content") or "").strip()
+                if not report:
+                    return self.send_json({
+                        "error":"Research model returned no final answer. Check Ollama diagnostics.",
+                        "query":query,"model":requested,
+                        "ollama_diagnostics":{
+                            "response_keys":list(answer.keys()) if isinstance(answer,dict) else [],
+                            "message_keys":list(message.keys()),
+                            "thinking_characters":len(message.get("thinking") or ""),
+                            "done":answer.get("done") if isinstance(answer,dict) else None,
+                            "done_reason":answer.get("done_reason") if isinstance(answer,dict) else None,
+                            "prompt_eval_count":answer.get("prompt_eval_count") if isinstance(answer,dict) else None,
+                            "eval_count":answer.get("eval_count") if isinstance(answer,dict) else None,
+                            "total_duration":answer.get("total_duration") if isinstance(answer,dict) else None,
+                            "eval_duration":answer.get("eval_duration") if isinstance(answer,dict) else None
+                        },
+                        "sources":[{k:v for k,v in item.items() if k!="page_text"} for item in fetched],
+                        "evidence_scope":"Source retrieval completed; Ollama returned no final message content."
+                    },502)
+                result={"query":query,"model":requested,"report":report,
+                    "sources":[{k:v for k,v in s.items() if k!="page_text"} for s in fetched],
+                    "evidence_scope":"FALCON attempted bounded HTML retrieval for each result. A successful fetch is not proof of factual accuracy. Dates are included only when explicit page metadata was found."}
+                if isinstance(answer,dict) and answer.get("done_reason")=="length":
+                    result["generation_warning"]="The model reached its output-token limit; this report may be incomplete."
+                self.send_json(result)
+            elif path == "/api/chat":
                 text=(data.get("message") or "").strip()
                 if not text: return self.send_json({"error":"Message is empty"},400)
                 cid=str(data.get("conversation_id") or datetime.now().strftime("chat-%Y%m%d-%H%M%S"))

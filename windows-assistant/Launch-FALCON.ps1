@@ -1,12 +1,80 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
-$Python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $Python) { Write-Host "Python 3 is required. Install it from https://www.python.org/downloads/" -ForegroundColor Red; Read-Host "Press Enter"; exit 1 }
-try { $null = Invoke-RestMethod "http://127.0.0.1:11434/api/version" -TimeoutSec 2; Write-Host "Ollama detected." -ForegroundColor Green }
-catch { Write-Host "Ollama is not responding. Start Ollama before chatting." -ForegroundColor Yellow }
+
+# Prefer the Windows Python Launcher. It resolves the installed interpreter
+# and bypasses the Microsoft Store python.exe execution alias.
+$PythonExe = $null
+$PythonArgs = @()
+$PyLauncher = Get-Command py -ErrorAction SilentlyContinue
+if ($PyLauncher) {
+  & $PyLauncher.Source -3 --version *> $null
+  if ($LASTEXITCODE -eq 0) {
+    $PythonExe = $PyLauncher.Source
+    $PythonArgs = @("-3")
+  }
+}
+
+# Fall back to a real python.exe on PATH, explicitly skipping the Store alias.
+if (-not $PythonExe) {
+  $PythonCommands = @(Get-Command python -All -ErrorAction SilentlyContinue)
+  foreach ($Command in $PythonCommands) {
+    if ($Command.Source -match "\\Microsoft\\WindowsApps\\") { continue }
+    & $Command.Source --version *> $null
+    if ($LASTEXITCODE -eq 0) {
+      $PythonExe = $Command.Source
+      break
+    }
+  }
+}
+
+if (-not $PythonExe) {
+  Write-Host "Python 3.10+ is required but was not found." -ForegroundColor Red
+  Write-Host "Install: https://www.python.org/downloads/windows/"
+  Write-Host "Enable 'Add python.exe to PATH', then reopen PowerShell."
+  Read-Host "Press Enter to close"
+  exit 1
+}
+
+try {
+  $null = Invoke-RestMethod "http://127.0.0.1:11434/api/version" -TimeoutSec 2
+  Write-Host "Ollama detected." -ForegroundColor Green
+} catch {
+  Write-Host "Ollama is not responding. Start Ollama before chatting." -ForegroundColor Yellow
+}
+
+# Reuse FALCON if it is already running anywhere in the managed port range.
+# This avoids starting duplicate instances when another app owns 8765.
+for ($CandidatePort = 8765; $CandidatePort -le 8875; $CandidatePort++) {
+  try {
+    $Existing = Invoke-RestMethod "http://127.0.0.1:$CandidatePort/api/status" -TimeoutSec 2
+    if ($Existing.app -eq "FALCON") {
+      Write-Host "FALCON is already running on port $CandidatePort. Opening it." -ForegroundColor Green
+      Start-Process "http://127.0.0.1:$CandidatePort"
+      exit 0
+    }
+  } catch { }
+}
+
+# If another application owns the default port, find a free local port automatically.
 $Port = 8765
-$Listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-if ($Listener) { Write-Host "Port $Port is already in use. Close the other app or change FALCON_PORT."; Read-Host "Press Enter"; exit 1 }
+while ($true) {
+  $Tcp = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+  try {
+    $Tcp.Start()
+    $Tcp.Stop()
+    break
+  } catch {
+    try { $Tcp.Stop() } catch { }
+    $Port++
+    if ($Port -gt 8875) { throw "No free port found between 8765 and 8875." }
+  }
+}
+$env:FALCON_PORT = "$Port"
+Write-Host "Starting FALCON at http://127.0.0.1:$Port" -ForegroundColor Cyan
 Start-Process "http://127.0.0.1:$Port"
-python server.py
+& $PythonExe @PythonArgs "server.py"
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "FALCON stopped with exit code $LASTEXITCODE" -ForegroundColor Red
+  Read-Host "Press Enter to close"
+}

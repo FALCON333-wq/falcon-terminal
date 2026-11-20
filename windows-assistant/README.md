@@ -4,8 +4,9 @@ A separate Windows desktop/browser assistant built around a local Python service
 
 ## Included in this first delivery
 
-- Local web dashboard at `http://127.0.0.1:8765`
+- Local web dashboard on the first available port in `8765–8875`
 - Ollama model discovery and model selection, including any cloud-backed models exposed by the user's Ollama installation
+- Research workspace: DuckDuckGo HTML search, up to five bounded page retrieval attempts, and evidence-limited synthesis by the selected Ollama model
 - Chat requests through Ollama's local API
 - Local SQLite conversation history
 - Explicitly saved, reviewable and deletable memories
@@ -27,7 +28,7 @@ A separate Windows desktop/browser assistant built around a local Python service
 
 ## Start
 
-Open PowerShell in this folder:
+Open PowerShell in this folder. The setup script checks for a working Python interpreter (including the Windows `py` launcher); it will stop with an installation instruction if Python is missing. The launcher searches ports 8765–8875 for an existing FALCON instance before starting a new one. If another application owns a port, it selects the next free local port:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -35,15 +36,19 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\Launch-FALCON.ps1
 ```
 
-Then open `http://127.0.0.1:8765`. The launcher opens the browser. Keep the PowerShell window open while using FALCON; Ctrl+C stops the service.
+The launcher prints and opens the actual URL. Use that URL; the port may be different from 8765 when another app owns the default port. Keep the PowerShell window open while using FALCON; Ctrl+C stops the service.
 
 ## Data and privacy
 
-- The server binds to `127.0.0.1` only. It is not exposed to your LAN or public internet.
+- The server binds to `127.0.0.1` only. It is not exposed to your LAN or public internet. The launcher manages ports 8765–8875 and reuses an existing FALCON instance in that range.
 - Conversations, tasks and saved memories are stored in `data/falcon.db` on this PC.
 - Prompts are sent to the selected Ollama model. Local models process locally. A cloud model selected through Ollama sends prompts to that cloud provider; do not use cloud models for sensitive data unless you accept that provider's terms.
 - This first version does not read arbitrary files, run shell commands, control the mouse/keyboard, or execute unattended actions.
 - Do not put API keys or passwords into memory or chat.
+
+## Research workspace
+
+Open **Research** in the dashboard and submit a question. FALCON queries DuckDuckGo's public HTML search endpoint, then attempts bounded HTML retrieval for up to five result pages. It extracts a limited amount of readable page text and common publication-date metadata, and asks the selected Ollama model to draft a brief with numbered source references. For Qwen3, the research prompt requests non-thinking mode and allows a larger final-answer token budget to avoid exhausting the response allowance in the separate thinking channel. The interface shows each page's retrieval status and whether date metadata was found. A successful fetch is not proof that a page's claims are true; dates may be absent, extraction may be incomplete, and some sites block automated access. The research endpoint reports model diagnostics if Ollama returns no final answer. Treat model summaries as analysis, inspect the linked sources, and verify important claims independently. Search availability depends on internet access and the upstream search service.
 
 ## Configuration
 
@@ -54,7 +59,7 @@ Edit `config.json` to change the Ollama endpoint or request timeout. The default
 - Native Windows desktop shell / tray icon
 - Wake-word listening and continuous microphone mode
 - Native offline speech-to-text and text-to-speech engines
-- Browser search and source-cited research agent
+- Browser-grade full-page rendering and independent source verification (research uses bounded text extraction and requires human review)
 - File workspace and code-editing agent
 - Permission-gated Windows automation
 - Multi-agent orchestration and scheduled background jobs
@@ -62,11 +67,13 @@ Edit `config.json` to change the Ollama endpoint or request timeout. The default
 
 These are planned stages, not claimed features. Voice input depends on browser support and may use the browser's speech service. Voice output uses the browser's built-in speech synthesis.
 
+See [HANDOVER.md](HANDOVER.md) for the full architecture, API inventory, operating procedure, validation checklist, backup/restore notes, and known limitations.
+
 ## Troubleshooting
 
 - **Ollama offline:** start Ollama and verify `http://127.0.0.1:11434/api/version`.
 - **No models:** run `ollama list`, then `ollama pull qwen3:4b`.
-- **Port busy:** close the other process using port 8765, or set a different `FALCON_PORT` before launching.
+- **Port busy:** the launcher scans ports 8765–8875 and selects an available one. Use the URL it prints.
 - **No voice input:** use current Microsoft Edge or Chrome and allow microphone permission.
 
 ## Security model
