@@ -323,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
                     "Cite each factual claim using only the supplied source numbers [1] through ["+str(len(fetched))+"]. "+
                     "Do not invent or cite a source that does not support the claim. "+
                     "Identify weak evidence, conflicting claims, and unresolved questions.\n\n"+evidence)
-                model_prompt=prompt+"\\nReturn at most 180 words. Use short bullets. Cite factual claims. If evidence is weak, say so."
+                model_prompt=prompt+"\nReturn at most 180 words. Use short bullets. Cite factual claims. If evidence is weak, say so."
                 research_payload={"model":research_model,"messages":[
                     {"role":"system","content":"You are FALCON Research. Return a concise final answer only. Do not include private reasoning, deliberation, or a reasoning trace. Be evidence-led. Never invent facts, dates, sources, or quotations. Search snippets are not full-page verification."},
                     {"role":"user","content":model_prompt}
