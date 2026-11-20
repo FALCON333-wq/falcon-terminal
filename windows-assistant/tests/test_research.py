@@ -5,7 +5,7 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_DIR))
 
-from server import PageTextParser, SearchResultsParser, fetch_page
+from server import PageTextParser, SearchResultsParser, choose_research_model, fetch_page
 
 
 class ResearchParserTests(unittest.TestCase):
@@ -55,6 +55,27 @@ class ResearchParserTests(unittest.TestCase):
         })
         self.assertEqual(result["fetch_status"], "blocked")
         self.assertEqual(result["page_text"], "")
+
+    def test_auto_prefers_gemma_for_research(self):
+        self.assertEqual(
+            choose_research_model("auto", ["qwen3:4b", "gemma3:4b", "llama3.2:latest"]),
+            "gemma3:4b"
+        )
+
+    def test_qwen_selection_falls_back_to_non_thinking_model(self):
+        self.assertEqual(
+            choose_research_model("qwen3:4b", ["qwen3:4b", "llama3.2:latest"]),
+            "llama3.2:latest"
+        )
+
+    def test_qwen_is_not_used_when_it_is_the_only_model(self):
+        self.assertIsNone(choose_research_model("qwen3:4b", ["qwen3:4b"]))
+
+    def test_explicit_non_qwen_selection_is_preserved(self):
+        self.assertEqual(
+            choose_research_model("llama3.2:latest", ["qwen3:4b", "llama3.2:latest"]),
+            "llama3.2:latest"
+        )
 
 
 if __name__ == "__main__":
