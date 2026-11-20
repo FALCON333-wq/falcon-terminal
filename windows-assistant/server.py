@@ -143,6 +143,17 @@ class PageTextParser(HTMLParser):
         if self.in_title: self.title_parts.append(value)
         if not self.skip: self.parts.append(value)
 
+def choose_research_model(requested, available):
+    """Avoid Qwen3 for research when it fails to return ordinary final text."""
+    requested = (requested or "auto").strip()
+    if requested == "auto" or requested.lower().startswith("qwen3"):
+        for candidate in ("gemma3:4b", "llama3.2:latest", "llama3.2"):
+            if candidate in available:
+                return candidate
+        return next((name for name in available if not name.lower().startswith("qwen3")), None)
+    return requested if requested in available else None
+
+
 def fetch_page(source):
     parsed = urlparse(source["url"])
     host = (parsed.hostname or "").lower()
@@ -279,10 +290,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error":"Search completed, but Ollama is unavailable: "+str(e)[:240],"query":query,"sources":sources},503)
                 if not available:
                     return self.send_json({"error":"Search completed, but no Ollama models are installed.","query":query,"sources":sources},503)
-                if requested == "auto":
-                    requested=next((m for m in available if m.startswith("qwen3")), available[0])
-                if requested not in available:
+                if requested != "auto" and requested not in available:
                     return self.send_json({"error":"Selected model is not installed: "+requested,"query":query,"sources":sources},400)
+                research_model = choose_research_model(requested, available)
+                if not research_model:
+                    return self.send_json({
+                        "error":"Research needs a non-Qwen3 local model. Qwen3 failed the final-answer control test on this Ollama setup. Install or select gemma3:4b or llama3.2:latest.",
+                        "query":query,"requested_model":requested,"available_models":available,"sources":sources
+                    },503)
+                model_notice = None
+                if research_model != requested:
+                    model_notice = "Research used "+research_model+" instead of "+requested+" because Qwen3 did not pass the local final-answer control test."
 
                 # Fetch at most five pages concurrently. A fetched page is evidence input,
                 # not proof that its claims are accurate.
@@ -305,22 +323,16 @@ class Handler(BaseHTTPRequestHandler):
                     "Cite each factual claim using only the supplied source numbers [1] through ["+str(len(fetched))+"]. "+
                     "Do not invent or cite a source that does not support the claim. "+
                     "Identify weak evidence, conflicting claims, and unresolved questions.\n\n"+evidence)
-                model_prompt=prompt+"\nReturn at most 180 words. Use short bullets. Cite factual claims. If evidence is weak, say so."
-                # Ollama's explicit think=false control is used for Qwen3. Keep
-                # /no_think as an additional prompt-level compatibility signal.
-                if requested.lower().startswith("qwen3"):
-                    model_prompt = "/no_think\n" + model_prompt
-                research_payload={"model":requested,"messages":[
-                    {"role":"system","content":"You are FALCON Research. Return the final answer immediately. Do not provide chain-of-thought or a reasoning trace. Be evidence-led. Never invent facts, dates, sources, or quotations. Search snippets are not full-page verification."},
+                model_prompt=prompt+"\\nReturn at most 180 words. Use short bullets. Cite factual claims. If evidence is weak, say so."
+                research_payload={"model":research_model,"messages":[
+                    {"role":"system","content":"You are FALCON Research. Return a concise final answer only. Do not include private reasoning, deliberation, or a reasoning trace. Be evidence-led. Never invent facts, dates, sources, or quotations. Search snippets are not full-page verification."},
                     {"role":"user","content":model_prompt}
-                ],"stream":False,"keep_alive":"10m","options":{"num_ctx":3072,"num_predict":512,"temperature":0.1}}
-                if requested.lower().startswith("qwen3"):
-                    research_payload["think"]=False
+                ],"stream":False,"keep_alive":"10m","options":{"num_ctx":4096,"num_predict":512,"temperature":0.1}}
                 try:
-                    answer=ollama("/api/chat",research_payload,timeout=600)
+                    answer=ollama("/api/chat",research_payload,timeout=240)
                 except Exception as e:
                     return self.send_json({"error":"Research analysis timed out or Ollama failed: "+str(e)[:240],
-                        "query":query,"model":requested,
+                        "query":query,"model":research_model,"requested_model":requested,
                         "sources":[{k:v for k,v in item.items() if k!="page_text"} for item in fetched],
                         "evidence_scope":"Source retrieval completed; AI analysis did not complete."},504)
                 message=answer.get("message") if isinstance(answer,dict) else None
@@ -329,7 +341,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not report:
                     return self.send_json({
                         "error":"Research model returned no final answer. Check Ollama diagnostics.",
-                        "query":query,"model":requested,
+                        "query":query,"model":research_model,"requested_model":requested,
                         "ollama_diagnostics":{
                             "response_keys":list(answer.keys()) if isinstance(answer,dict) else [],
                             "message_keys":list(message.keys()),
@@ -344,9 +356,11 @@ class Handler(BaseHTTPRequestHandler):
                         "sources":[{k:v for k,v in item.items() if k!="page_text"} for item in fetched],
                         "evidence_scope":"Source retrieval completed; Ollama returned no final message content."
                     },502)
-                result={"query":query,"model":requested,"report":report,
+                result={"query":query,"model":research_model,"requested_model":requested,"report":report,
                     "sources":[{k:v for k,v in s.items() if k!="page_text"} for s in fetched],
                     "evidence_scope":"FALCON attempted bounded HTML retrieval for each result. A successful fetch is not proof of factual accuracy. Dates are included only when explicit page metadata was found."}
+                if model_notice:
+                    result["model_notice"] = model_notice
                 if isinstance(answer,dict) and answer.get("done_reason")=="length":
                     result["generation_warning"]="The model reached its output-token limit; this report may be incomplete."
                 self.send_json(result)
